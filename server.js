@@ -1,5 +1,5 @@
 const express = require('express');
-const { makeWASocket, useMultiFileAuthState } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 
 const app = express();
@@ -11,37 +11,41 @@ let botStatus = "Disconnected";
 let storesQueue = [];
 let minTime = 5;
 let maxTime = 8;
+let timerId = null;
 
-// 👉 TARO WHATSAPP NUMBER AHIYA NAKHI DE (Country code sathe, jem ke 919876543210)
-const PHONENUMBER = "91YOUR_PHONE_NUMBER_HERE"; 
+// Taro Number (Logs ma Pairing Code lavva mate)
+const MY_NUMBER = "918401690936";
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     
     sock = makeWASocket({
         auth: state,
-        logger: pino({ level: 'silent' })
+        printQRInTerminal: false,
+        logger: pino({ level: 'silent' }),
+        browser: Browsers.macOS('Chrome')
     });
 
-    // Jo phone link na hoy to pairing code generate thase
+    // QR Code ni badle Logs ma Pairing Code aavse
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
-                const code = await sock.requestPairingCode(PHONENUMBER);
+                const code = await sock.requestPairingCode(MY_NUMBER);
+                botStatus = `Pairing Code: ${code}`;
                 console.log(`\n========================================`);
                 console.log(`🔥 TARO PAIRING CODE: ${code}`);
                 console.log(`========================================\n`);
             } catch (err) {
-                console.error("Error getting pairing code:", err);
+                console.error("Pairing Error:", err);
             }
-        }, 3000);
+        }, 5000);
     }
 
     sock.ev.on('connection.update', (update) => {
         const { connection } = update;
         if (connection === 'open') {
             botStatus = "Connected & Running";
-            console.log('WhatsApp Connected Successfully via Number!');
+            console.log('WhatsApp Connected Successfully!');
             startScheduler();
         } else if (connection === 'close') {
             botStatus = "Disconnected. Reconnecting...";
@@ -54,6 +58,7 @@ async function connectToWhatsApp() {
 
 connectToWhatsApp();
 
+// Same to Same Original Dashboard UI
 app.get('/', (req, res) => {
     res.send(`
         <html>
@@ -89,9 +94,12 @@ app.get('/', (req, res) => {
     `);
 });
 
+// Tu Dashboard mathi je time set karis te tarat j apply thase
 app.post('/save', (req, res) => {
     minTime = parseInt(req.body.minTime) || 5;
     maxTime = parseInt(req.body.maxTime) || 8;
+    console.log(`New Timer Set from Dashboard: ${minTime} to ${maxTime} mins`);
+    startScheduler(); // Navo time save karta j timer update thai jase
     res.redirect('/');
 });
 
@@ -100,9 +108,11 @@ app.post('/add', (req, res) => {
     lines.forEach(line => {
         const parts = line.split(',');
         if (parts.length >= 2) {
+            let cleanPhone = parts[1].replace(/[^0-9]/g, '');
+            if (cleanPhone.length === 10) cleanPhone = '91' + cleanPhone;
             storesQueue.push({
                 name: parts[0].trim(),
-                phone: parts[1].trim(),
+                phone: cleanPhone,
                 status: 'Pending'
             });
         }
@@ -111,22 +121,28 @@ app.post('/add', (req, res) => {
 });
 
 function startScheduler() {
-    setInterval(async () => {
-        if (botStatus !== "Connected & Running") return;
-        const pendingStore = storesQueue.find(s => s.status === 'Pending');
-        if (!pendingStore) return;
+    if (timerId) clearTimeout(timerId);
 
-        try {
-            const jid = `${pendingStore.phone}@s.whatsapp.net`;
-            const message = `Hi ${pendingStore.name}! 👋\n\nHu ek student web developer chu, tamara area na clothing collection mate ek special 3D Mobile website banavi che. Joiye to "YES" lakhi reply karo! ✨`;
-            
-            await sock.sendMessage(jid, { text: message });
-            pendingStore.status = 'Sent';
-            console.log(`Message sent to ${pendingStore.name} (${pendingStore.phone})`);
-        } else (err) => {
-            console.error(`Failed to send:`, err);
+    const delayMinutes = Math.floor(Math.random() * (maxTime - minTime + 1)) + minTime;
+    
+    timerId = setTimeout(async () => {
+        if (botStatus === "Connected & Running") {
+            const pendingStore = storesQueue.find(s => s.status === 'Pending');
+            if (pendingStore) {
+                try {
+                    const jid = `${pendingStore.phone}@s.whatsapp.net`;
+                    const message = `Hi ${pendingStore.name}! 👋\n\nHu ek student web developer chu, tamara area na clothing collection mate ek special 3D Mobile website banavi che. Joiye to "YES" lakhi reply karo! ✨`;
+                    
+                    await sock.sendMessage(jid, { text: message });
+                    pendingStore.status = 'Sent';
+                    console.log(`Message sent to ${pendingStore.name} (${pendingStore.phone})`);
+                } catch (err) {
+                    console.error(`Failed to send to ${pendingStore.name}:`, err);
+                }
+            }
         }
-    }, (Math.floor(Math.random() * (maxTime - minTime + 1)) + minTime) * 60 * 1000);
+        startScheduler();
+    }, delayMinutes * 60 * 1000);
 }
 
 const PORT = process.env.PORT || 3000;
