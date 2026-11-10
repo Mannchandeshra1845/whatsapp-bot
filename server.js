@@ -1,42 +1,56 @@
 const express = require('express');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { makeWASocket, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
+const pino = require('pino');
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
+let sock;
+let qrCodeValue = "";
+let botStatus = "Disconnected";
 let storesQueue = [];
 let minTime = 5;
 let maxTime = 8;
-let botStatus = "Disconnected";
-let qrCodeValue = "";
 
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: { args: ['--no-sandbox', '--disable-setuid-sandbox'] }
-});
+async function connectToWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    
+    sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true,
+        logger: pino({ level: 'silent' })
+    });
 
-client.on('qr', (qr) => {
-    qrCodeValue = qr;
-    botStatus = "Scan QR Code";
-    qrcode.generate(qr, { small: true });
-});
+    sock.ev.on('connection.update', (update) => {
+        const { connection, qr } = update;
+        if (qr) {
+            qrCodeValue = qr;
+            botStatus = "Scan QR Code in Render Logs";
+            qrcode.generate(qr, { small: true });
+        }
+        if (connection === 'open') {
+            botStatus = "Connected & Running";
+            console.log('WhatsApp Connected Successfully!');
+            startScheduler();
+        } else if (connection === 'close') {
+            botStatus = "Disconnected. Reconnecting...";
+            setTimeout(connectToWhatsApp, 5000);
+        }
+    });
 
-client.on('ready', () => {
-    botStatus = "Connected & Running";
-    console.log('WhatsApp Connected!');
-    startScheduler();
-});
+    sock.ev.on('creds.update', saveCreds);
+}
 
-client.initialize();
+connectToWhatsApp();
 
 app.get('/', (req, res) => {
     res.send(`
         <html>
         <head><title>WhatsApp Bot Dashboard</title></head>
         <body style="font-family: Arial; padding: 20px; background: #121212; color: #fff;">
-            <h2>🚀 WhatsApp Outreach Dashboard</h2>
+            <h2>🚀 WhatsApp Outreach Dashboard (Baileys)</h2>
             <p><b>Status:</b> <span style="color: #00ff00;">${botStatus}</span></p>
             
             <hr style="border-color: #444;">
@@ -94,10 +108,10 @@ function startScheduler() {
         if (!pendingStore) return;
 
         try {
-            const chatId = `${pendingStore.phone}@c.us`;
+            const jid = `${pendingStore.phone}@s.whatsapp.net`;
             const message = `Hi ${pendingStore.name}! 👋\n\nHu ek student web developer chu, tamara area na clothing collection mate ek special 3D Mobile website banavi che. Joiye to "YES" lakhi reply karo! ✨`;
             
-            await client.sendMessage(chatId, message);
+            await sock.sendMessage(jid, { text: message });
             pendingStore.status = 'Sent';
             console.log(`Message sent to ${pendingStore.name} (${pendingStore.phone})`);
         } catch (err) {
