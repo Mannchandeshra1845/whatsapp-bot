@@ -19,7 +19,7 @@ async function connectToWhatsApp() {
     
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
+        printQRInTerminal: false, // Log ma mota print thavanu bandh
         logger: pino({ level: 'silent' })
     });
 
@@ -28,7 +28,10 @@ async function connectToWhatsApp() {
         if (qr) {
             qrCodeValue = qr;
             botStatus = "Scan QR Code in Render Logs";
+            console.log("\n--- SCAN THIS QR CODE ---");
+            // Ahiya { small: true } thi QR code ekdam nanakdo ane clear print thase
             qrcode.generate(qr, { small: true });
+            console.log("--------------------------\n");
         }
         if (connection === 'open') {
             botStatus = "Connected & Running";
@@ -50,7 +53,7 @@ app.get('/', (req, res) => {
         <html>
         <head><title>WhatsApp Bot Dashboard</title></head>
         <body style="font-family: Arial; padding: 20px; background: #121212; color: #fff;">
-            <h2>🚀 WhatsApp Outreach Dashboard (Baileys)</h2>
+            <h2>🚀 WhatsApp Outreach Dashboard</h2>
             <p><b>Status:</b> <span style="color: #00ff00;">${botStatus}</span></p>
             
             <hr style="border-color: #444;">
