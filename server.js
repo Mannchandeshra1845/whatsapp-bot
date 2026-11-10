@@ -1,6 +1,5 @@
 const express = require('express');
 const { makeWASocket, useMultiFileAuthState } = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 
 const app = express();
@@ -8,34 +7,41 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
 let sock;
-let qrCodeValue = "";
 let botStatus = "Disconnected";
 let storesQueue = [];
 let minTime = 5;
 let maxTime = 8;
+
+// 👉 TARO WHATSAPP NUMBER AHIYA NAKHI DE (Country code sathe, jem ke 919876543210)
+const PHONENUMBER = "91YOUR_PHONE_NUMBER_HERE"; 
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false, // Log ma mota print thavanu bandh
         logger: pino({ level: 'silent' })
     });
 
+    // Jo phone link na hoy to pairing code generate thase
+    if (!sock.authState.creds.registered) {
+        setTimeout(async () => {
+            try {
+                const code = await sock.requestPairingCode(PHONENUMBER);
+                console.log(`\n========================================`);
+                console.log(`🔥 TARO PAIRING CODE: ${code}`);
+                console.log(`========================================\n`);
+            } catch (err) {
+                console.error("Error getting pairing code:", err);
+            }
+        }, 3000);
+    }
+
     sock.ev.on('connection.update', (update) => {
-        const { connection, qr } = update;
-        if (qr) {
-            qrCodeValue = qr;
-            botStatus = "Scan QR Code in Render Logs";
-            console.log("\n--- SCAN THIS QR CODE ---");
-            // Ahiya { small: true } thi QR code ekdam nanakdo ane clear print thase
-            qrcode.generate(qr, { small: true });
-            console.log("--------------------------\n");
-        }
+        const { connection } = update;
         if (connection === 'open') {
             botStatus = "Connected & Running";
-            console.log('WhatsApp Connected Successfully!');
+            console.log('WhatsApp Connected Successfully via Number!');
             startScheduler();
         } else if (connection === 'close') {
             botStatus = "Disconnected. Reconnecting...";
@@ -117,8 +123,8 @@ function startScheduler() {
             await sock.sendMessage(jid, { text: message });
             pendingStore.status = 'Sent';
             console.log(`Message sent to ${pendingStore.name} (${pendingStore.phone})`);
-        } catch (err) {
-            console.error(`Failed to send to ${pendingStore.name}:`, err);
+        } else (err) => {
+            console.error(`Failed to send:`, err);
         }
     }, (Math.floor(Math.random() * (maxTime - minTime + 1)) + minTime) * 60 * 1000);
 }
