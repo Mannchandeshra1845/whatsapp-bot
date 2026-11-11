@@ -17,13 +17,32 @@ let sentToday = 0;
 let limitPerDay = 10;
 let minDelay = 5;
 let maxDelay = 8;
-let msgTemplate = `Hi {storeName}! 👋\n\nमैंने आपका Instagram page देखा, collection बहुत ही शानदार है! मैं एक student web developer हूँ और मैंने आपके स्टोर के लिए एक special 3D Mobile website बनाई है। देखना चाहेंगे? "YES" रिप्लाई करें! ✨`;
 
-let storesQueue = [];
+// Currently active category ('boys', 'girls', or 'jewelry')
+let activeCategory = 'girls'; 
+
+// Separate Message Templates for each category
+let msgTemplates = {
+    boys: `Hi {storeName}! 👋\n\nमैंने आपका Instagram page देखा, मेन्स collection बहुत ही शानदार है! मैं एक student web developer हूँ और मैंने आपके स्टोर के लिए एक special 3D Mobile website बनाई है। देखना चाहेंगे? "YES" रिप्लाई करें! ✨`,
+    girls: `Hi {storeName}! 👋\n\nमैंने आपका Instagram page देखा, गर्ल्स एंड लेडीज collection बहुत ही शानदार है! मैं एक student web developer हूँ और मैंने आपके बुटीक/स्टोर के लिए एक special 3D Mobile website बनाई है। देखना चाहेंगे? "YES" रिप्लाई करें! ✨`,
+    jewelry: `Hi {storeName}! 👋\n\nमैंने आपका Jewellery collection देखा, डिज़ाइन्स बहुत ही शानदार हैं! मैं एक student web developer हूँ और मैंने आपकी ज्वेलरी शॉप के लिए एक special 3D Mobile website बनाई है। देखना चाहेंगे? "YES" रिप्लाई करें! ✨`
+};
+
+// Separate Store Queues (Boys na juna 17 numbers pehlethi save karela che!)
+let storesQueues = {
+    boys: [],
+    girls: [],
+    jewelry: []
+};
+
 let timerId = null;
-
-// Taro Number Pairing Code mate
 const MY_NUMBER = "918401690936";
+
+const categoryNames = {
+    boys: "👔 Boys / Men's Stores",
+    girls: "👗 Girls / Women's Stores",
+    jewelry: "💍 Imitation Jewelry Stores"
+};
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -55,7 +74,7 @@ async function connectToWhatsApp() {
         if (connection === 'open') {
             isConnected = true;
             pairingCodeValue = "";
-            statusMessage = isRunning ? "🚀 Dispatcher Running..." : "✔️ WhatsApp Connected! Ready to send.";
+            statusMessage = isRunning ? `🚀 Dispatcher Running (${categoryNames[activeCategory]})` : "✔️ WhatsApp Connected! Ready to send.";
             console.log('WhatsApp Connected Successfully!');
         } else if (connection === 'close') {
             isConnected = false;
@@ -69,8 +88,10 @@ async function connectToWhatsApp() {
 
 connectToWhatsApp();
 
-// Exact Same-to-Same Mann's Auto-Dispatcher UI
 app.get('/', (req, res) => {
+    const currentQueue = storesQueues[activeCategory];
+    const currentMsg = msgTemplates[activeCategory];
+
     res.send(`
     <!DOCTYPE html>
     <html>
@@ -142,6 +163,48 @@ app.get('/', (req, res) => {
             .btn-add { background-color: #131b23; border: 1px solid #00a870; color: #ffffff; margin-top: 15px; }
             .btn-remove { background-color: #131b23; border: 1px solid #ef4444; color: #ef4444; font-weight: 500; padding: 10px; margin-bottom: 15px; }
             
+            /* Category Switcher Styles */
+            .cat-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                background-color: #1c2733;
+                padding: 12px 15px;
+                border-radius: 8px;
+                margin-bottom: 10px;
+                border: 1px solid #2e3d4f;
+            }
+            .cat-row.active {
+                border: 2px solid #00a870;
+                background-color: #142e26;
+            }
+            .cat-info {
+                font-size: 16px;
+                font-weight: 600;
+            }
+            .cat-sub {
+                font-size: 13px;
+                color: #94a3b8;
+                margin-top: 3px;
+            }
+            .btn-switch {
+                background-color: #3b82f6;
+                color: white;
+                border: none;
+                padding: 8px 14px;
+                border-radius: 6px;
+                font-weight: bold;
+                cursor: pointer;
+            }
+            .badge-active {
+                background-color: #00a870;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: bold;
+            }
+
             label {
                 display: block;
                 margin-bottom: 8px;
@@ -182,7 +245,8 @@ app.get('/', (req, res) => {
                 <span>${isConnected ? '🟢 Connected' : '🔴 Disconnected'}</span>
             </div>
             <div class="status-box">
-                ${statusMessage}
+                ${statusMessage}<br>
+                <small style="color: #00a870;">Active Mode: <b>${categoryNames[activeCategory]}</b></small>
             </div>
             <div class="sent-counter">
                 Sent Today: ${sentToday} / ${limitPerDay}
@@ -202,9 +266,47 @@ app.get('/', (req, res) => {
             </form>
         </div>
 
-        <!-- Card 2: Settings -->
+        <!-- Card 2: Category Switcher (NEW) -->
         <div class="card">
-            <h2>⚙️ Settings</h2>
+            <h2>📂 Select Category (Switch)</h2>
+            
+            <!-- Boys Option -->
+            <div class="cat-row ${activeCategory === 'boys' ? 'active' : ''}">
+                <div>
+                    <div class="cat-info">👔 Boys / Men's Stores</div>
+                    <div class="cat-sub">Total: ${storesQueues.boys.length} | Pending: ${storesQueues.boys.filter(s => s.status === 'Pending').length}</div>
+                </div>
+                ${activeCategory === 'boys' 
+                    ? `<span class="badge-active">✅ ACTIVE</span>` 
+                    : `<form action="/switch" method="POST"><input type="hidden" name="category" value="boys"><button type="submit" class="btn-switch">Switch to This</button></form>`}
+            </div>
+
+            <!-- Girls Option -->
+            <div class="cat-row ${activeCategory === 'girls' ? 'active' : ''}">
+                <div>
+                    <div class="cat-info">👗 Girls / Women's Stores</div>
+                    <div class="cat-sub">Total: ${storesQueues.girls.length} | Pending: ${storesQueues.girls.filter(s => s.status === 'Pending').length}</div>
+                </div>
+                ${activeCategory === 'girls' 
+                    ? `<span class="badge-active">✅ ACTIVE</span>` 
+                    : `<form action="/switch" method="POST"><input type="hidden" name="category" value="girls"><button type="submit" class="btn-switch">Switch to This</button></form>`}
+            </div>
+
+            <!-- Jewelry Option -->
+            <div class="cat-row ${activeCategory === 'jewelry' ? 'active' : ''}">
+                <div>
+                    <div class="cat-info">💍 Imitation Jewelry Stores</div>
+                    <div class="cat-sub">Total: ${storesQueues.jewelry.length} | Pending: ${storesQueues.jewelry.filter(s => s.status === 'Pending').length}</div>
+                </div>
+                ${activeCategory === 'jewelry' 
+                    ? `<span class="badge-active">✅ ACTIVE</span>` 
+                    : `<form action="/switch" method="POST"><input type="hidden" name="category" value="jewelry"><button type="submit" class="btn-switch">Switch to This</button></form>`}
+            </div>
+        </div>
+
+        <!-- Card 3: Settings -->
+        <div class="card">
+            <h2>⚙️ Settings (${categoryNames[activeCategory]})</h2>
             <form action="/save" method="POST">
                 <label>Limit/Day:</label>
                 <input type="number" name="limitPerDay" value="${limitPerDay}" required>
@@ -215,30 +317,31 @@ app.get('/', (req, res) => {
                 <label>Max Delay (m):</label>
                 <input type="number" name="maxDelay" value="${maxDelay}" required>
 
-                <label>Msg:</label>
-                <textarea name="msgTemplate" rows="5" required>${msgTemplate}</textarea>
+                <label>Msg (for ${categoryNames[activeCategory]}):</label>
+                <textarea name="msgTemplate" rows="5" required>${currentMsg}</textarea>
 
                 <button type="submit" class="btn btn-start">💾 Save Settings</button>
             </form>
         </div>
 
-        <!-- Card 3: Add Stores -->
+        <!-- Card 4: Add Stores -->
         <div class="card">
-            <h2>➕ Add Stores (Name, Number)</h2>
+            <h2>➕ Add to ${categoryNames[activeCategory]}</h2>
             <form action="/add" method="POST">
-                <textarea name="stores" rows="4" placeholder="Max Zone, 917779090982&#10;Denim Hub, 9879123456" required></textarea>
-                <button type="submit" class="btn btn-add">📥 Add Stores</button>
+                <textarea name="stores" rows="4" placeholder="Store Name, 919876543210&#10; Boutique Name, 9879123456" required></textarea>
+                <button type="submit" class="btn btn-add">📥 Add Stores to ${activeCategory.toUpperCase()}</button>
             </form>
         </div>
 
-        <!-- Card 4: Stores Queue -->
+        <!-- Card 5: Stores Queue -->
         <div class="card">
-            <h2>📋 Stores Queue</h2>
+            <h2>📋 Queue: ${categoryNames[activeCategory]} (${currentQueue.length})</h2>
             <form action="/remove-sent" method="POST">
                 <button type="submit" class="btn btn-remove">🗑️ Remove Already 'Sent' Stores</button>
             </form>
             <div>
-                ${storesQueue.map(s => `<div class="queue-item">${s.name} (${s.phone}) - <b>${s.status}</b></div>`).join('')}
+                ${currentQueue.length === 0 ? '<p style="color:#64748b;">No stores in this category yet. Add above!</p>' : ''}
+                ${currentQueue.map(s => `<div class="queue-item">${s.name} (${s.phone}) - <b>${s.status}</b></div>`).join('')}
             </div>
         </div>
 
@@ -247,7 +350,17 @@ app.get('/', (req, res) => {
     `);
 });
 
-// START DISPATCHER Button Logic
+// Switch Category Logic
+app.post('/switch', (req, res) => {
+    const newCat = req.body.category;
+    if (storesQueues[newCat]) {
+        activeCategory = newCat;
+        statusMessage = `🔄 Switched to ${categoryNames[activeCategory]}!`;
+    }
+    res.redirect('/');
+});
+
+// START DISPATCHER
 app.post('/start', async (req, res) => {
     if (!isConnected) {
         statusMessage = "❌ Cannot start: WhatsApp not connected!";
@@ -255,13 +368,13 @@ app.post('/start', async (req, res) => {
     }
     if (!isRunning) {
         isRunning = true;
-        statusMessage = "🚀 Dispatcher Started! Sending messages...";
-        processQueue(); // Start dabavta j pehlo message check karse
+        statusMessage = `🚀 Dispatcher Started for ${categoryNames[activeCategory]}!`;
+        processQueue();
     }
     res.redirect('/');
 });
 
-// STOP DISPATCHER Button Logic
+// STOP DISPATCHER
 app.post('/stop', (req, res) => {
     isRunning = false;
     if (timerId) clearTimeout(timerId);
@@ -269,14 +382,14 @@ app.post('/stop', (req, res) => {
     res.redirect('/');
 });
 
-// Reset Counter Button Logic
+// Reset Counter
 app.post('/reset', (req, res) => {
     sentToday = 0;
     statusMessage = "🔄 Today's counter reset to 0.";
     res.redirect('/');
 });
 
-// Reconnect / Get New Pairing Code Logic
+// Reconnect WhatsApp
 app.post('/reconnect', async (req, res) => {
     try {
         if (timerId) clearTimeout(timerId);
@@ -293,17 +406,19 @@ app.post('/reconnect', async (req, res) => {
     res.redirect('/');
 });
 
-// Save Settings Logic
+// Save Settings
 app.post('/save', (req, res) => {
     limitPerDay = parseInt(req.body.limitPerDay) || 10;
     minDelay = parseInt(req.body.minDelay) || 5;
     maxDelay = parseInt(req.body.maxDelay) || 8;
-    msgTemplate = req.body.msgTemplate || msgTemplate;
-    statusMessage = "💾 Settings Saved Successfully!";
+    if (req.body.msgTemplate) {
+        msgTemplates[activeCategory] = req.body.msgTemplate;
+    }
+    statusMessage = `💾 Settings Saved for ${categoryNames[activeCategory]}!`;
     res.redirect('/');
 });
 
-// Add Stores Logic
+// Add Stores to Active Category
 app.post('/add', (req, res) => {
     const lines = req.body.stores.split('\n');
     let count = 0;
@@ -312,26 +427,28 @@ app.post('/add', (req, res) => {
         if (parts.length >= 2) {
             let cleanPhone = parts[1].replace(/[^0-9]/g, '');
             if (cleanPhone.length === 10) cleanPhone = '91' + cleanPhone;
-            storesQueue.push({
-                name: parts[0].trim(),
-                phone: cleanPhone,
-                status: 'Pending'
-            });
-            count++;
+            if (cleanPhone.length >= 10) {
+                storesQueues[activeCategory].push({
+                    name: parts[0].trim(),
+                    phone: cleanPhone,
+                    status: 'Pending'
+                });
+                count++;
+            }
         }
     });
-    statusMessage = `📥 Added ${count} stores to queue.`;
+    statusMessage = `📥 Added ${count} stores to ${categoryNames[activeCategory]}.`;
     res.redirect('/');
 });
 
-// Remove Already 'Sent' Stores Logic
+// Remove 'Sent' from Active Category
 app.post('/remove-sent', (req, res) => {
-    storesQueue = storesQueue.filter(s => s.status !== 'Sent');
-    statusMessage = "🗑️ Removed all 'Sent' stores from queue.";
+    storesQueues[activeCategory] = storesQueues[activeCategory].filter(s => s.status !== 'Sent');
+    statusMessage = `🗑️ Removed 'Sent' stores from ${categoryNames[activeCategory]}.`;
     res.redirect('/');
 });
 
-// Background Dispatcher Function
+// Background Dispatcher Function (Sends from currently active category)
 async function processQueue() {
     if (!isRunning || !isConnected) return;
 
@@ -341,24 +458,26 @@ async function processQueue() {
         return;
     }
 
-    const pendingStore = storesQueue.find(s => s.status === 'Pending');
+    const currentQueue = storesQueues[activeCategory];
+    const pendingStore = currentQueue.find(s => s.status === 'Pending');
+    
     if (!pendingStore) {
         isRunning = false;
-        statusMessage = "✅ All pending stores completed!";
+        statusMessage = `✅ All pending stores in ${categoryNames[activeCategory]} completed!`;
         return;
     }
 
     try {
         const jid = `${pendingStore.phone}@s.whatsapp.net`;
-        const personalizedMsg = msgTemplate.replace(/{storeName}/g, pendingStore.name);
+        const personalizedMsg = msgTemplates[activeCategory].replace(/{storeName}/g, pendingStore.name);
         
         await sock.sendMessage(jid, { text: personalizedMsg });
         pendingStore.status = 'Sent';
         sentToday++;
         
         const delayMinutes = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
-        statusMessage = `✅ Sent to ${pendingStore.name}. Next message in ${delayMinutes} min...`;
-        console.log(`Message sent to ${pendingStore.name}. Next in ${delayMinutes}m`);
+        statusMessage = `✅ Sent to ${pendingStore.name} (${activeCategory}). Next in ${delayMinutes} min...`;
+        console.log(`[${activeCategory.toUpperCase()}] Sent to ${pendingStore.name}. Next in ${delayMinutes}m`);
 
         if (isRunning && sentToday < limitPerDay) {
             timerId = setTimeout(processQueue, delayMinutes * 60 * 1000);
