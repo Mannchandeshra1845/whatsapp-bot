@@ -7,11 +7,11 @@ const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-let sock;
+let sock = null;
 let isConnected = false;
 let isRunning = false;
-let isPairingInProgress = false;
-let statusMessage = "⏳ Connecting to WhatsApp...";
+let hasRequestedCode = false;
+let statusMessage = "⏳ Ready! Click 'Get New QR / Reconnect WhatsApp' to get Pairing Code.";
 let pairingCodeValue = "";
 
 let sentToday = 0;
@@ -27,7 +27,6 @@ let msgTemplates = {
     jewelry: `Hi {storeName}! 👋\n\nमैंने आपका Jewellery collection देखा, डिज़ाइन्स बहुत ही शानदार हैं! मैं एक student web developer हूँ और मैंने आपकी ज्वेलरी शॉप के लिए एक special 3D Mobile website बनाई है। देखना चाहेंगे? "YES" रिप्लाई करें! ✨`
 };
 
-// Badha numbers remove kari didha che - Traney Queue ekdam khali che
 let storesQueues = {
     boys: [],
     girls: [],
@@ -43,65 +42,67 @@ const categoryNames = {
     jewelry: "💍 Girls Jewelry Stores"
 };
 
-async function connectToWhatsApp(requestNewCode = false) {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-    
-    sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: false,
-        logger: pino({ level: 'silent' }),
-        browser: Browsers.macOS('Chrome'),
-        connectTimeoutMs: 60000,
-        keepAliveIntervalMs: 30000
-    });
-
-    // Jo registered na hoy ane pehli vaar ke button dabavine mangyo hoy tyare j code mangse (Loop nahi thay)
-    if (!sock.authState.creds.registered && (!isPairingInProgress || requestNewCode)) {
-        isPairingInProgress = true;
-        setTimeout(async () => {
-            try {
-                if (sock && !sock.authState.creds.registered) {
-                    const code = await sock.requestPairingCode(MY_NUMBER);
-                    pairingCodeValue = code;
-                    statusMessage = `📲 Pairing Code: ${code} (Enter in WhatsApp within 1 min)`;
-                    console.log(`\n========================================`);
-                    console.log(`🔥 TARO PAIRING CODE: ${code}`);
-                    console.log(`========================================\n`);
-                }
-            } catch (err) {
-                isPairingInProgress = false;
-                statusMessage = "⚠️ Click 'Get New QR / Reconnect WhatsApp' to generate Pairing Code.";
-            }
-        }, 6000);
-    }
-
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update;
+async function connectToWhatsApp(shouldPair = false) {
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
         
-        if (connection === 'open') {
-            isConnected = true;
-            isPairingInProgress = false;
-            pairingCodeValue = "";
-            statusMessage = isRunning ? `🚀 Dispatcher Running (${categoryNames[activeCategory]})` : "✔️ WhatsApp Connected! Ready to send.";
-            console.log('WhatsApp Connected Successfully!');
-        } else if (connection === 'close') {
-            isConnected = false;
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            
-            // Jo already pair thayelu hoy ane disconnect thay to automatic reconnect thase
-            if (sock.authState.creds.registered && statusCode !== DisconnectReason.loggedOut) {
-                statusMessage = "🔄 Reconnecting to WhatsApp...";
-                setTimeout(() => connectToWhatsApp(false), 5000);
-            } else if (!sock.authState.creds.registered) {
-                // Jo code nakhvama time gayo hoy to error spam nahi kare
-                statusMessage = "⏳ Waiting for Pairing... Click 'Get New QR / Reconnect' button below for a fresh code.";
-            }
-        }
-    });
+        sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            logger: pino({ level: 'silent' }),
+            browser: Browsers.macOS('Chrome'),
+            connectTimeoutMs: 60000,
+            keepAliveIntervalMs: 30000
+        });
 
-    sock.ev.on('creds.update', saveCreds);
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update;
+
+            // Handshake 100% ready thay (qr generate thay) tyare j Pairing Code mangse (No 428 Error!)
+            if (qr && !sock.authState.creds.registered && shouldPair && !hasRequestedCode) {
+                hasRequestedCode = true;
+                setTimeout(async () => {
+                    try {
+                        const code = await sock.requestPairingCode(MY_NUMBER);
+                        pairingCodeValue = code;
+                        statusMessage = `📲 TARO PAIRING CODE: ${code} (WhatsApp ma nakho)`;
+                        console.log(`\n========================================`);
+                        console.log(`🔥 TARO PAIRING CODE: ${code}`);
+                        console.log(`========================================\n`);
+                    } catch (e) {
+                        hasRequestedCode = false;
+                        statusMessage = "⚠️ Click 'Get New QR / Reconnect WhatsApp' to get a fresh code.";
+                    }
+                }, 2000);
+            }
+            
+            if (connection === 'open') {
+                isConnected = true;
+                hasRequestedCode = false;
+                pairingCodeValue = "";
+                statusMessage = isRunning ? `🚀 Dispatcher Running (${categoryNames[activeCategory]})` : "✔️ WhatsApp Connected! Ready to send.";
+                console.log('✅ WhatsApp Connected Successfully!');
+            } else if (connection === 'close') {
+                isConnected = false;
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                
+                // Fakt pehlethi login hoy to j auto-reconnect thase, naki background loop bandh!
+                if (sock.authState.creds.registered && statusCode !== DisconnectReason.loggedOut) {
+                    statusMessage = "🔄 Reconnecting to WhatsApp...";
+                    setTimeout(() => connectToWhatsApp(false), 5000);
+                } else {
+                    statusMessage = "📲 Not Linked. Click 'Get New QR / Reconnect WhatsApp' button below to get Pairing Code.";
+                }
+            }
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+    } catch (err) {
+        statusMessage = "⚠️ Connection reset. Click Reconnect button.";
+    }
 }
 
+// Start par check karse jo login hase to connect karse, naki 1 vaar code kadhse
 connectToWhatsApp(true);
 
 app.get('/', (req, res) => {
@@ -251,7 +252,7 @@ app.get('/', (req, res) => {
                 <span>${isConnected ? '🟢 Connected' : '🔴 Disconnected'}</span>
             </div>
             <div class="status-box">
-                ${statusMessage}<br>
+                <b style="color: #fbbf24; font-size: 17px;">${statusMessage}</b><br>
                 <small style="color: #00a870;">Active Mode: <b>${categoryNames[activeCategory]}</b></small>
             </div>
             <div class="sent-counter">
@@ -393,15 +394,16 @@ app.post('/reconnect', async (req, res) => {
         if (timerId) clearTimeout(timerId);
         isRunning = false;
         isConnected = false;
-        isPairingInProgress = false;
+        hasRequestedCode = false;
+        try {
+            if (sock) sock.end();
+        } catch (e) {}
         if (fs.existsSync('auth_info_baileys')) {
             fs.rmSync('auth_info_baileys', { recursive: true, force: true });
         }
-        statusMessage = "⏳ Generating fresh Pairing Code in 6 seconds... Refresh page after 6 sec!";
+        statusMessage = "⏳ Generating fresh Pairing Code... Wait 5 seconds & Refresh Page!";
         connectToWhatsApp(true);
-    } catch (e) {
-        console.error(e);
-    }
+    } catch (e) {}
     res.redirect('/');
 });
 
@@ -482,7 +484,6 @@ async function processQueue() {
         }
     } catch (err) {
         pendingStore.status = 'Failed';
-        console.error(`Failed to send to ${pendingStore.name}:`, err);
         statusMessage = `❌ Failed to send to ${pendingStore.name}. Trying next in 1 min...`;
         if (isRunning) {
             timerId = setTimeout(processQueue, 60 * 1000);
