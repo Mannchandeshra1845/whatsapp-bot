@@ -5,30 +5,34 @@ const fs = require('fs');
 const https = require('https');
 
 const app = express();
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+// Large store lists (100+ stores) add karva mate limit 50mb kari didhi che
+app.use(express.urlencoded({ extended: true, limit: '50mb', parameterLimit: 50000 }));
+app.use(express.json({ limit: '50mb' }));
 
-// Crash-Guard: Bad MAC કે session errors થી સર્વર બંધ નહીં થવા દે
+// Crash-Guard: Bad MAC ke session errors thi server kadi crash nahi thay
 process.on('uncaughtException', (err) => {
-    console.log('Handled System Warning (Ignored):', err.message);
+    console.log('Handled System Warning:', err.message);
 });
 process.on('unhandledRejection', (err) => {
-    console.log('Handled Promise Warning (Ignored):', err);
+    console.log('Handled Promise Warning:', err);
 });
+
+const DATA_FILE = './bot_data.json';
+const MY_NUMBER = "918401690936";
 
 let sock = null;
 let isConnected = false;
 let isRunning = false;
 let hasRequestedCode = false;
 let statusMessage = "⏳ Connecting to WhatsApp...";
-let pairingCodeValue = "";
+let timerId = null;
 
+// Default State
 let sentToday = 0;
 let limitPerDay = 15;
 let minDelay = 5;
 let maxDelay = 8;
-
-let activeCategory = 'jewelry'; 
+let activeCategory = 'girls';
 
 let msgTemplates = {
     boys: `Hi {storeName}! 👋\n\nमैंने आपका Instagram page देखा, मेन्स collection बहुत ही शानदार है! मैं एक student web developer हूँ और मैंने आपके स्टोर के लिए एक special 3D Mobile website बनाई है। देखना चाहेंगे? "YES" रिप्लाई करें! ✨`,
@@ -42,23 +46,53 @@ let storesQueues = {
     jewelry: []
 };
 
-let timerId = null;
-const MY_NUMBER = "918401690936";
-
 const categoryNames = {
     boys: "👔 Boys / Men's Stores",
     girls: "👗 Girls / Women's Stores",
     jewelry: "💍 Girls Jewelry Stores"
 };
 
+// Auto-Load & Auto-Save Functions (Jethi stores udi na jay)
+function loadSavedData() {
+    try {
+        if (fs.existsSync(DATA_FILE)) {
+            const raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+            if (raw.storesQueues) storesQueues = raw.storesQueues;
+            if (raw.msgTemplates) msgTemplates = raw.msgTemplates;
+            if (raw.limitPerDay) limitPerDay = raw.limitPerDay;
+            if (raw.minDelay) minDelay = raw.minDelay;
+            if (raw.maxDelay) maxDelay = raw.maxDelay;
+            if (raw.activeCategory) activeCategory = raw.activeCategory;
+            if (typeof raw.sentToday === 'number') sentToday = raw.sentToday;
+        }
+    } catch (e) {
+        console.log('Starting with fresh data.');
+    }
+}
+
+function saveData() {
+    try {
+        fs.writeFileSync(DATA_FILE, JSON.stringify({
+            storesQueues,
+            msgTemplates,
+            limitPerDay,
+            minDelay,
+            maxDelay,
+            activeCategory,
+            sentToday
+        }, null, 2));
+    } catch (e) {}
+}
+
+loadSavedData();
+
 // ================= ANTI-SLEEP ENGINE ================= //
-// Render ને ક્યારેય ઊંઘવા (Sleep થવા) નહીં દે!
 const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || "https://whatsapp-bot-6ig6.onrender.com";
 setInterval(() => {
-    https.get(`${RENDER_EXTERNAL_URL}/ping`, (res) => {}).on('error', () => {});
-}, 4 * 60 * 1000); // દર 4 મિનિટે સેલ્ફ-પિંગ
+    https.get(`${RENDER_EXTERNAL_URL}/ping`, () => {}).on('error', () => {});
+}, 4 * 60 * 1000);
 
-app.get('/ping', (req, res) => res.send('OK - Bot Alive'));
+app.get('/ping', (req, res) => res.status(200).send('OK'));
 // ===================================================== //
 
 async function connectToWhatsApp(shouldPair = false) {
@@ -73,7 +107,8 @@ async function connectToWhatsApp(shouldPair = false) {
             connectTimeoutMs: 60000,
             keepAliveIntervalMs: 25000,
             emitOwnEvents: false,
-            markOnlineOnConnect: true
+            markOnlineOnConnect: true,
+            syncFullHistory: false
         });
 
         sock.ev.on('connection.update', async (update) => {
@@ -84,14 +119,13 @@ async function connectToWhatsApp(shouldPair = false) {
                 setTimeout(async () => {
                     try {
                         const code = await sock.requestPairingCode(MY_NUMBER);
-                        pairingCodeValue = code;
-                        statusMessage = `📲 TARO PAIRING CODE: ${code}`;
+                        statusMessage = `📲 TARO PAIRING CODE: ${code} (WhatsApp ma Link karo)`;
                         console.log(`\n========================================`);
                         console.log(`🔥 TARO PAIRING CODE: ${code}`);
                         console.log(`========================================\n`);
                     } catch (e) {
                         hasRequestedCode = false;
-                        statusMessage = "⚠️ Click 'Get New QR / Reconnect' to fetch code.";
+                        statusMessage = "⚠️ Click 'Get New QR / Reconnect WhatsApp' to get Pairing Code.";
                     }
                 }, 2000);
             }
@@ -99,19 +133,17 @@ async function connectToWhatsApp(shouldPair = false) {
             if (connection === 'open') {
                 isConnected = true;
                 hasRequestedCode = false;
-                pairingCodeValue = "";
                 statusMessage = isRunning ? `🚀 Dispatcher Running (${categoryNames[activeCategory]})` : "✔️ WhatsApp Connected! Ready to send.";
                 console.log('✅ WhatsApp Connected Successfully!');
             } else if (connection === 'close') {
                 isConnected = false;
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
                 
-                // Reconnect automatically without clearing files
-                if (statusCode !== DisconnectReason.loggedOut) {
-                    statusMessage = "🔄 Reconnecting WhatsApp...";
+                if (sock?.authState?.creds?.registered && statusCode !== DisconnectReason.loggedOut) {
+                    statusMessage = "🔄 Reconnecting to WhatsApp...";
                     setTimeout(() => connectToWhatsApp(false), 5000);
                 } else {
-                    statusMessage = "📲 Disconnected. Click 'Get New QR / Reconnect' to login.";
+                    statusMessage = "📲 Not Connected. Click 'Get New QR / Reconnect WhatsApp' below.";
                 }
             }
         });
@@ -126,8 +158,9 @@ async function connectToWhatsApp(shouldPair = false) {
 connectToWhatsApp(true);
 
 app.get('/', (req, res) => {
-    const currentQueue = storesQueues[activeCategory];
-    const currentMsg = msgTemplates[activeCategory];
+    if (!storesQueues[activeCategory]) activeCategory = 'girls';
+    const currentQueue = storesQueues[activeCategory] || [];
+    const currentMsg = msgTemplates[activeCategory] || '';
 
     res.send(`
     <!DOCTYPE html>
@@ -147,7 +180,7 @@ app.get('/', (req, res) => {
             .btn-stop { background-color: #ef4444; }
             .btn-reset { background-color: #1c2733; border: 1px solid #37475a; color: #e2e8f0; font-weight: 500; }
             .btn-reconnect { background-color: #1c2733; border: 1px solid #d97706; color: #fbbf24; font-weight: 500; }
-            .btn-add { background-color: #131b23; border: 1px solid #00a870; color: #ffffff; margin-top: 15px; }
+            .btn-add { background-color: #00a870; border: 1px solid #00a870; color: #ffffff; margin-top: 10px; }
             .btn-remove { background-color: #131b23; border: 1px solid #ef4444; color: #ef4444; font-weight: 500; padding: 10px; margin-bottom: 15px; }
             
             .cat-row { display: flex; justify-content: space-between; align-items: center; background-color: #1c2733; padding: 12px 15px; border-radius: 8px; margin-bottom: 10px; border: 1px solid #2e3d4f; }
@@ -174,7 +207,7 @@ app.get('/', (req, res) => {
             </div>
             <div class="status-box">
                 <b style="color: #fbbf24; font-size: 16px;">${statusMessage}</b><br>
-                <small style="color: #00a870;">Mode: <b>${categoryNames[activeCategory]}</b> | 🛡️ Anti-Sleep: <b>ACTIVE</b></small>
+                <small style="color: #00a870;">Active Category: <b>${categoryNames[activeCategory]}</b></small>
             </div>
             <div class="sent-counter">
                 Sent Today: ${sentToday} / ${limitPerDay}
@@ -249,11 +282,11 @@ app.get('/', (req, res) => {
             </form>
         </div>
 
-        <!-- Card 4: Add Stores -->
-        <div class="card">
-            <h2>➕ Add to ${categoryNames[activeCategory]}</h2>
+        <!-- Card 4: Add Stores (Smart Parser) -->
+        <div class="card" id="queue-section">
+            <h2>➕ Add Stores (${categoryNames[activeCategory]})</h2>
             <form action="/add" method="POST">
-                <textarea name="stores" rows="4" placeholder="Store Name, 919876543210&#10;Jewels Name, 9879123456" required></textarea>
+                <textarea name="stores" rows="5" placeholder="Helly Fashion Surat, 919925891081&#10;Shree Boutique Rajkot, 919737011811"></textarea>
                 <button type="submit" class="btn btn-add">📥 Add Stores</button>
             </form>
         </div>
@@ -265,8 +298,8 @@ app.get('/', (req, res) => {
                 <button type="submit" class="btn btn-remove">🗑️ Remove Already 'Sent' Stores</button>
             </form>
             <div>
-                ${currentQueue.length === 0 ? '<p style="color:#64748b;">Queue is empty. Add stores above!</p>' : ''}
-                ${currentQueue.map(s => `<div class="queue-item">${s.name} (${s.phone}) - <b>${s.status}</b></div>`).join('')}
+                ${currentQueue.length === 0 ? '<p style="color:#64748b;">Queue is empty. Paste stores above and click Add Stores!</p>' : ''}
+                ${currentQueue.map((s, i) => `<div class="queue-item">${i + 1}. ${s.name} (${s.phone}) - <b style="color:${s.status === 'Sent' ? '#00a870' : (s.status === 'Failed' ? '#ef4444' : '#fbbf24')}">${s.status}</b></div>`).join('')}
             </div>
         </div>
 
@@ -280,18 +313,24 @@ app.post('/switch', (req, res) => {
     if (storesQueues[newCat]) {
         activeCategory = newCat;
         statusMessage = `🔄 Switched to ${categoryNames[activeCategory]}!`;
+        saveData();
     }
     res.redirect('/');
 });
 
 app.post('/start', async (req, res) => {
     if (!isConnected) {
-        statusMessage = "❌ Cannot start: WhatsApp not connected! Reconnect first.";
+        statusMessage = "❌ Cannot start: WhatsApp not connected! Click 'Get New QR / Reconnect' first.";
+        return res.redirect('/');
+    }
+    const pendingCount = (storesQueues[activeCategory] || []).filter(s => s.status === 'Pending').length;
+    if (pendingCount === 0) {
+        statusMessage = `⚠️ No pending stores in ${categoryNames[activeCategory]}! Add stores first.`;
         return res.redirect('/');
     }
     if (!isRunning) {
         isRunning = true;
-        statusMessage = `🚀 Dispatcher Started for ${categoryNames[activeCategory]}!`;
+        statusMessage = `🚀 Dispatcher Started for ${categoryNames[activeCategory]}! Sending 1st message now...`;
         processQueue();
     }
     res.redirect('/');
@@ -307,6 +346,7 @@ app.post('/stop', (req, res) => {
 app.post('/reset', (req, res) => {
     sentToday = 0;
     statusMessage = "🔄 Today's counter reset to 0.";
+    saveData();
     res.redirect('/');
 });
 
@@ -320,7 +360,7 @@ app.post('/reconnect', async (req, res) => {
         if (fs.existsSync('auth_info_baileys')) {
             fs.rmSync('auth_info_baileys', { recursive: true, force: true });
         }
-        statusMessage = "⏳ Generating fresh Pairing Code... Wait 5 seconds & Refresh!";
+        statusMessage = "⏳ Generating fresh Pairing Code... Wait 5 seconds & Refresh Page!";
         connectToWhatsApp(true);
     } catch (e) {}
     res.redirect('/');
@@ -334,34 +374,69 @@ app.post('/save', (req, res) => {
         msgTemplates[activeCategory] = req.body.msgTemplate;
     }
     statusMessage = `💾 Settings Saved for ${categoryNames[activeCategory]}!`;
+    saveData();
     res.redirect('/');
 });
 
+// SMART STORE PARSER: Works with comma, tab, space, CSV rows, or multi-comma names!
 app.post('/add', (req, res) => {
-    const lines = req.body.stores.split('\n');
-    let count = 0;
+    const rawInput = req.body.stores || '';
+    const lines = rawInput.split(/\r?\n/);
+    let addedCount = 0;
+
+    if (!storesQueues[activeCategory]) {
+        storesQueues[activeCategory] = [];
+    }
+
     lines.forEach(line => {
-        const parts = line.split(',');
-        if (parts.length >= 2) {
-            let cleanPhone = parts[1].replace(/[^0-9]/g, '');
-            if (cleanPhone.length === 10) cleanPhone = '91' + cleanPhone;
-            if (cleanPhone.length >= 10) {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        // Skip CSV Header if accidentally pasted
+        if (/^store_name|^name\s*,/i.test(trimmed)) return;
+
+        // Find 10 to 12 digit Indian phone number anywhere in the line
+        const phoneMatch = trimmed.match(/(?:(?:\+|00)?91[\s\-]*)?([6-9]\d{4}[\s\-]*\d{5})/);
+        if (phoneMatch) {
+            const digits10 = phoneMatch[1].replace(/\D/g, '');
+            const cleanPhone = '91' + digits10;
+
+            // Everything before the phone number (or first comma) is the Store Name
+            let namePart = trimmed.substring(0, phoneMatch.index)
+                .replace(/[,;\t|]+$/, '')
+                .replace(/^["']|["']$/g, '')
+                .trim();
+
+            // If CSV row has extra columns before phone (e.g. store_name,category,followers,,phone)
+            if (namePart.includes(',')) {
+                namePart = namePart.split(',')[0].trim();
+            }
+
+            if (!namePart) namePart = "Store";
+
+            // Avoid duplicate numbers in the same category queue
+            const exists = storesQueues[activeCategory].some(s => s.phone === cleanPhone);
+            if (!exists) {
                 storesQueues[activeCategory].push({
-                    name: parts[0].trim(),
+                    name: namePart,
                     phone: cleanPhone,
                     status: 'Pending'
                 });
-                count++;
+                addedCount++;
             }
         }
     });
-    statusMessage = `📥 Added ${count} stores to ${categoryNames[activeCategory]}.`;
+
+    saveData();
+    statusMessage = addedCount > 0 
+        ? `✅ Successfully added ${addedCount} stores to ${categoryNames[activeCategory]}!` 
+        : `⚠️ 0 new stores added (Check format or already in queue).`;
     res.redirect('/');
 });
 
 app.post('/remove-sent', (req, res) => {
-    storesQueues[activeCategory] = storesQueues[activeCategory].filter(s => s.status !== 'Sent');
+    storesQueues[activeCategory] = (storesQueues[activeCategory] || []).filter(s => s.status !== 'Sent');
     statusMessage = `🗑️ Removed 'Sent' stores from ${categoryNames[activeCategory]}.`;
+    saveData();
     res.redirect('/');
 });
 
@@ -371,15 +446,17 @@ async function processQueue() {
     if (sentToday >= limitPerDay) {
         isRunning = false;
         statusMessage = `🎯 Daily limit reached (${sentToday}/${limitPerDay}). Dispatcher stopped.`;
+        saveData();
         return;
     }
 
-    const currentQueue = storesQueues[activeCategory];
+    const currentQueue = storesQueues[activeCategory] || [];
     const pendingStore = currentQueue.find(s => s.status === 'Pending');
     
     if (!pendingStore) {
         isRunning = false;
         statusMessage = `✅ All pending stores in ${categoryNames[activeCategory]} completed!`;
+        saveData();
         return;
     }
 
@@ -390,10 +467,11 @@ async function processQueue() {
         await sock.sendMessage(jid, { text: personalizedMsg });
         pendingStore.status = 'Sent';
         sentToday++;
+        saveData();
         
         const delayMinutes = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
         statusMessage = `✅ Sent to ${pendingStore.name}. Next in ${delayMinutes} min...`;
-        console.log(`[${activeCategory.toUpperCase()}] Sent to ${pendingStore.name}. Next in ${delayMinutes}m`);
+        console.log(`[${activeCategory.toUpperCase()}] Sent to ${pendingStore.name} (${pendingStore.phone}). Next in ${delayMinutes}m`);
 
         if (isRunning && sentToday < limitPerDay) {
             timerId = setTimeout(processQueue, delayMinutes * 60 * 1000);
@@ -403,6 +481,7 @@ async function processQueue() {
         }
     } catch (err) {
         pendingStore.status = 'Failed';
+        saveData();
         statusMessage = `❌ Failed to send to ${pendingStore.name}. Trying next in 1 min...`;
         if (isRunning) {
             timerId = setTimeout(processQueue, 60 * 1000);
