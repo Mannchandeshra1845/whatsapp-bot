@@ -2,24 +2,33 @@ const express = require('express');
 const { makeWASocket, useMultiFileAuthState, Browsers, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
+const https = require('https');
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
+// Crash-Guard: Bad MAC કે session errors થી સર્વર બંધ નહીં થવા દે
+process.on('uncaughtException', (err) => {
+    console.log('Handled System Warning (Ignored):', err.message);
+});
+process.on('unhandledRejection', (err) => {
+    console.log('Handled Promise Warning (Ignored):', err);
+});
+
 let sock = null;
 let isConnected = false;
 let isRunning = false;
 let hasRequestedCode = false;
-let statusMessage = "⏳ Ready! Click 'Get New QR / Reconnect WhatsApp' to get Pairing Code.";
+let statusMessage = "⏳ Connecting to WhatsApp...";
 let pairingCodeValue = "";
 
 let sentToday = 0;
-let limitPerDay = 10;
+let limitPerDay = 15;
 let minDelay = 5;
 let maxDelay = 8;
 
-let activeCategory = 'girls'; 
+let activeCategory = 'jewelry'; 
 
 let msgTemplates = {
     boys: `Hi {storeName}! 👋\n\nमैंने आपका Instagram page देखा, मेन्स collection बहुत ही शानदार है! मैं एक student web developer हूँ और मैंने आपके स्टोर के लिए एक special 3D Mobile website बनाई है। देखना चाहेंगे? "YES" रिप्लाई करें! ✨`,
@@ -42,6 +51,16 @@ const categoryNames = {
     jewelry: "💍 Girls Jewelry Stores"
 };
 
+// ================= ANTI-SLEEP ENGINE ================= //
+// Render ને ક્યારેય ઊંઘવા (Sleep થવા) નહીં દે!
+const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || "https://whatsapp-bot-6ig6.onrender.com";
+setInterval(() => {
+    https.get(`${RENDER_EXTERNAL_URL}/ping`, (res) => {}).on('error', () => {});
+}, 4 * 60 * 1000); // દર 4 મિનિટે સેલ્ફ-પિંગ
+
+app.get('/ping', (req, res) => res.send('OK - Bot Alive'));
+// ===================================================== //
+
 async function connectToWhatsApp(shouldPair = false) {
     try {
         const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -52,26 +71,27 @@ async function connectToWhatsApp(shouldPair = false) {
             logger: pino({ level: 'silent' }),
             browser: Browsers.macOS('Chrome'),
             connectTimeoutMs: 60000,
-            keepAliveIntervalMs: 30000
+            keepAliveIntervalMs: 25000,
+            emitOwnEvents: false,
+            markOnlineOnConnect: true
         });
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect, qr } = update;
 
-            // Handshake 100% ready thay (qr generate thay) tyare j Pairing Code mangse (No 428 Error!)
             if (qr && !sock.authState.creds.registered && shouldPair && !hasRequestedCode) {
                 hasRequestedCode = true;
                 setTimeout(async () => {
                     try {
                         const code = await sock.requestPairingCode(MY_NUMBER);
                         pairingCodeValue = code;
-                        statusMessage = `📲 TARO PAIRING CODE: ${code} (WhatsApp ma nakho)`;
+                        statusMessage = `📲 TARO PAIRING CODE: ${code}`;
                         console.log(`\n========================================`);
                         console.log(`🔥 TARO PAIRING CODE: ${code}`);
                         console.log(`========================================\n`);
                     } catch (e) {
                         hasRequestedCode = false;
-                        statusMessage = "⚠️ Click 'Get New QR / Reconnect WhatsApp' to get a fresh code.";
+                        statusMessage = "⚠️ Click 'Get New QR / Reconnect' to fetch code.";
                     }
                 }, 2000);
             }
@@ -86,23 +106,23 @@ async function connectToWhatsApp(shouldPair = false) {
                 isConnected = false;
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
                 
-                // Fakt pehlethi login hoy to j auto-reconnect thase, naki background loop bandh!
-                if (sock.authState.creds.registered && statusCode !== DisconnectReason.loggedOut) {
-                    statusMessage = "🔄 Reconnecting to WhatsApp...";
+                // Reconnect automatically without clearing files
+                if (statusCode !== DisconnectReason.loggedOut) {
+                    statusMessage = "🔄 Reconnecting WhatsApp...";
                     setTimeout(() => connectToWhatsApp(false), 5000);
                 } else {
-                    statusMessage = "📲 Not Linked. Click 'Get New QR / Reconnect WhatsApp' button below to get Pairing Code.";
+                    statusMessage = "📲 Disconnected. Click 'Get New QR / Reconnect' to login.";
                 }
             }
         });
 
         sock.ev.on('creds.update', saveCreds);
     } catch (err) {
-        statusMessage = "⚠️ Connection reset. Click Reconnect button.";
+        statusMessage = "⚠️ Connection resetting...";
+        setTimeout(() => connectToWhatsApp(false), 5000);
     }
 }
 
-// Start par check karse jo login hase to connect karse, naki 1 vaar code kadhse
 connectToWhatsApp(true);
 
 app.get('/', (req, res) => {
@@ -116,64 +136,13 @@ app.get('/', (req, res) => {
         <title>Mann's Auto-Dispatcher</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
-            body {
-                background-color: #0b1116;
-                color: #ffffff;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-                margin: 0;
-                padding: 15px;
-            }
-            .card {
-                background-color: #131b23;
-                border: 1px solid #222e3a;
-                border-radius: 12px;
-                padding: 20px;
-                margin-bottom: 20px;
-            }
-            h2 {
-                margin-top: 0;
-                font-size: 22px;
-                display: flex;
-                align-items: center;
-                gap: 10px;
-            }
-            .status-line {
-                font-size: 18px;
-                font-weight: 500;
-                margin: 15px 0;
-                display: flex;
-                align-items: center;
-                gap: 8px;
-            }
-            .status-box {
-                background-color: #1c2733;
-                padding: 14px;
-                border-radius: 8px;
-                color: #cfd8dc;
-                margin-bottom: 18px;
-                font-size: 15px;
-                line-height: 1.5;
-            }
-            .sent-counter {
-                font-size: 20px;
-                font-weight: bold;
-                margin-bottom: 18px;
-            }
-            .btn {
-                width: 100%;
-                padding: 14px;
-                border-radius: 8px;
-                font-size: 16px;
-                font-weight: bold;
-                cursor: pointer;
-                margin-bottom: 12px;
-                border: none;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                gap: 8px;
-                color: white;
-            }
+            body { background-color: #0b1116; color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 15px; }
+            .card { background-color: #131b23; border: 1px solid #222e3a; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+            h2 { margin-top: 0; font-size: 22px; display: flex; align-items: center; gap: 10px; }
+            .status-line { font-size: 18px; font-weight: 500; margin: 15px 0; display: flex; align-items: center; gap: 8px; }
+            .status-box { background-color: #1c2733; padding: 14px; border-radius: 8px; color: #cfd8dc; margin-bottom: 18px; font-size: 15px; line-height: 1.5; }
+            .sent-counter { font-size: 20px; font-weight: bold; margin-bottom: 18px; }
+            .btn { width: 100%; padding: 14px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; margin-bottom: 12px; border: none; display: flex; justify-content: center; align-items: center; gap: 8px; color: white; }
             .btn-start { background-color: #00a870; }
             .btn-stop { background-color: #ef4444; }
             .btn-reset { background-color: #1c2733; border: 1px solid #37475a; color: #e2e8f0; font-weight: 500; }
@@ -181,65 +150,17 @@ app.get('/', (req, res) => {
             .btn-add { background-color: #131b23; border: 1px solid #00a870; color: #ffffff; margin-top: 15px; }
             .btn-remove { background-color: #131b23; border: 1px solid #ef4444; color: #ef4444; font-weight: 500; padding: 10px; margin-bottom: 15px; }
             
-            .cat-row {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                background-color: #1c2733;
-                padding: 12px 15px;
-                border-radius: 8px;
-                margin-bottom: 10px;
-                border: 1px solid #2e3d4f;
-            }
-            .cat-row.active {
-                border: 2px solid #00a870;
-                background-color: #142e26;
-            }
+            .cat-row { display: flex; justify-content: space-between; align-items: center; background-color: #1c2733; padding: 12px 15px; border-radius: 8px; margin-bottom: 10px; border: 1px solid #2e3d4f; }
+            .cat-row.active { border: 2px solid #00a870; background-color: #142e26; }
             .cat-info { font-size: 16px; font-weight: 600; }
             .cat-sub { font-size: 13px; color: #94a3b8; margin-top: 3px; }
-            .btn-switch {
-                background-color: #3b82f6;
-                color: white;
-                border: none;
-                padding: 8px 14px;
-                border-radius: 6px;
-                font-weight: bold;
-                cursor: pointer;
-            }
-            .badge-active {
-                background-color: #00a870;
-                color: white;
-                padding: 6px 12px;
-                border-radius: 6px;
-                font-size: 13px;
-                font-weight: bold;
-            }
+            .btn-switch { background-color: #3b82f6; color: white; border: none; padding: 8px 14px; border-radius: 6px; font-weight: bold; cursor: pointer; }
+            .badge-active { background-color: #00a870; color: white; padding: 6px 12px; border-radius: 6px; font-size: 13px; font-weight: bold; }
 
-            label {
-                display: block;
-                margin-bottom: 8px;
-                font-size: 16px;
-                color: #e2e8f0;
-            }
-            input[type="number"], textarea {
-                width: 100%;
-                background-color: #1c2733;
-                border: 1px solid #2e3d4f;
-                color: #ffffff;
-                padding: 12px;
-                border-radius: 8px;
-                font-size: 15px;
-                box-sizing: border-box;
-                margin-bottom: 16px;
-                font-family: inherit;
-            }
+            label { display: block; margin-bottom: 8px; font-size: 16px; color: #e2e8f0; }
+            input[type="number"], textarea { width: 100%; background-color: #1c2733; border: 1px solid #2e3d4f; color: #ffffff; padding: 12px; border-radius: 8px; font-size: 15px; box-sizing: border-box; margin-bottom: 16px; font-family: inherit; }
             textarea { font-family: monospace; line-height: 1.4; }
-            .queue-item {
-                padding: 14px 0;
-                border-bottom: 1px solid #1e293b;
-                font-size: 17px;
-                line-height: 1.4;
-            }
+            .queue-item { padding: 14px 0; border-bottom: 1px solid #1e293b; font-size: 17px; line-height: 1.4; }
             form { margin: 0; }
         </style>
     </head>
@@ -252,8 +173,8 @@ app.get('/', (req, res) => {
                 <span>${isConnected ? '🟢 Connected' : '🔴 Disconnected'}</span>
             </div>
             <div class="status-box">
-                <b style="color: #fbbf24; font-size: 17px;">${statusMessage}</b><br>
-                <small style="color: #00a870;">Active Mode: <b>${categoryNames[activeCategory]}</b></small>
+                <b style="color: #fbbf24; font-size: 16px;">${statusMessage}</b><br>
+                <small style="color: #00a870;">Mode: <b>${categoryNames[activeCategory]}</b> | 🛡️ Anti-Sleep: <b>ACTIVE</b></small>
             </div>
             <div class="sent-counter">
                 Sent Today: ${sentToday} / ${limitPerDay}
@@ -332,7 +253,7 @@ app.get('/', (req, res) => {
         <div class="card">
             <h2>➕ Add to ${categoryNames[activeCategory]}</h2>
             <form action="/add" method="POST">
-                <textarea name="stores" rows="4" placeholder="Store Name, 919876543210&#10;Boutique Name, 9879123456" required></textarea>
+                <textarea name="stores" rows="4" placeholder="Store Name, 919876543210&#10;Jewels Name, 9879123456" required></textarea>
                 <button type="submit" class="btn btn-add">📥 Add Stores</button>
             </form>
         </div>
@@ -365,7 +286,7 @@ app.post('/switch', (req, res) => {
 
 app.post('/start', async (req, res) => {
     if (!isConnected) {
-        statusMessage = "❌ Cannot start: WhatsApp not connected!";
+        statusMessage = "❌ Cannot start: WhatsApp not connected! Reconnect first.";
         return res.redirect('/');
     }
     if (!isRunning) {
@@ -395,20 +316,18 @@ app.post('/reconnect', async (req, res) => {
         isRunning = false;
         isConnected = false;
         hasRequestedCode = false;
-        try {
-            if (sock) sock.end();
-        } catch (e) {}
+        try { if (sock) sock.end(); } catch (e) {}
         if (fs.existsSync('auth_info_baileys')) {
             fs.rmSync('auth_info_baileys', { recursive: true, force: true });
         }
-        statusMessage = "⏳ Generating fresh Pairing Code... Wait 5 seconds & Refresh Page!";
+        statusMessage = "⏳ Generating fresh Pairing Code... Wait 5 seconds & Refresh!";
         connectToWhatsApp(true);
     } catch (e) {}
     res.redirect('/');
 });
 
 app.post('/save', (req, res) => {
-    limitPerDay = parseInt(req.body.limitPerDay) || 10;
+    limitPerDay = parseInt(req.body.limitPerDay) || 15;
     minDelay = parseInt(req.body.minDelay) || 5;
     maxDelay = parseInt(req.body.maxDelay) || 8;
     if (req.body.msgTemplate) {
@@ -473,7 +392,7 @@ async function processQueue() {
         sentToday++;
         
         const delayMinutes = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
-        statusMessage = `✅ Sent to ${pendingStore.name} (${activeCategory}). Next in ${delayMinutes} min...`;
+        statusMessage = `✅ Sent to ${pendingStore.name}. Next in ${delayMinutes} min...`;
         console.log(`[${activeCategory.toUpperCase()}] Sent to ${pendingStore.name}. Next in ${delayMinutes}m`);
 
         if (isRunning && sentToday < limitPerDay) {
