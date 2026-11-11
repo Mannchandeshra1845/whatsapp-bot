@@ -1,5 +1,5 @@
 const express = require('express');
-const { makeWASocket, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, Browsers, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
 
@@ -10,6 +10,7 @@ app.use(express.json());
 let sock;
 let isConnected = false;
 let isRunning = false;
+let isPairingInProgress = false;
 let statusMessage = "⏳ Connecting to WhatsApp...";
 let pairingCodeValue = "";
 
@@ -18,17 +19,15 @@ let limitPerDay = 10;
 let minDelay = 5;
 let maxDelay = 8;
 
-// Currently active category ('boys', 'girls', or 'jewelry')
 let activeCategory = 'girls'; 
 
-// Separate Message Templates for each category
 let msgTemplates = {
     boys: `Hi {storeName}! 👋\n\nमैंने आपका Instagram page देखा, मेन्स collection बहुत ही शानदार है! मैं एक student web developer हूँ और मैंने आपके स्टोर के लिए एक special 3D Mobile website बनाई है। देखना चाहेंगे? "YES" रिप्लाई करें! ✨`,
     girls: `Hi {storeName}! 👋\n\nमैंने आपका Instagram page देखा, गर्ल्स एंड लेडीज collection बहुत ही शानदार है! मैं एक student web developer हूँ और मैंने आपके बुटीक/स्टोर के लिए एक special 3D Mobile website बनाई है। देखना चाहेंगे? "YES" रिप्लाई करें! ✨`,
     jewelry: `Hi {storeName}! 👋\n\nमैंने आपका Jewellery collection देखा, डिज़ाइन्स बहुत ही शानदार हैं! मैं एक student web developer हूँ और मैंने आपकी ज्वेलरी शॉप के लिए एक special 3D Mobile website बनाई है। देखना चाहेंगे? "YES" रिप्लाई करें! ✨`
 };
 
-// Separate Store Queues (Boys na juna 17 numbers pehlethi save karela che!)
+// Badha numbers remove kari didha che - Traney Queue ekdam khali che
 let storesQueues = {
     boys: [],
     girls: [],
@@ -41,52 +40,69 @@ const MY_NUMBER = "918401690936";
 const categoryNames = {
     boys: "👔 Boys / Men's Stores",
     girls: "👗 Girls / Women's Stores",
-    jewelry: "💍 Imitation Jewelry Stores"
+    jewelry: "💍 Girls Jewelry Stores"
 };
 
-async function connectToWhatsApp() {
+async function connectToWhatsApp(requestNewCode = false) {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: Browsers.macOS('Chrome')
+        browser: Browsers.macOS('Chrome'),
+        connectTimeoutMs: 60000,
+        keepAliveIntervalMs: 30000
     });
 
-    if (!sock.authState.creds.registered) {
+    // Jo registered na hoy ane pehli vaar ke button dabavine mangyo hoy tyare j code mangse (Loop nahi thay)
+    if (!sock.authState.creds.registered && (!isPairingInProgress || requestNewCode)) {
+        isPairingInProgress = true;
         setTimeout(async () => {
             try {
-                const code = await sock.requestPairingCode(MY_NUMBER);
-                pairingCodeValue = code;
-                statusMessage = `📲 Pairing Code: ${code} (Enter in WhatsApp)`;
-                console.log(`\n========================================`);
-                console.log(`🔥 TARO PAIRING CODE: ${code}`);
-                console.log(`========================================\n`);
+                if (sock && !sock.authState.creds.registered) {
+                    const code = await sock.requestPairingCode(MY_NUMBER);
+                    pairingCodeValue = code;
+                    statusMessage = `📲 Pairing Code: ${code} (Enter in WhatsApp within 1 min)`;
+                    console.log(`\n========================================`);
+                    console.log(`🔥 TARO PAIRING CODE: ${code}`);
+                    console.log(`========================================\n`);
+                }
             } catch (err) {
-                console.error("Pairing Error:", err);
+                isPairingInProgress = false;
+                statusMessage = "⚠️ Click 'Get New QR / Reconnect WhatsApp' to generate Pairing Code.";
             }
-        }, 5000);
+        }, 6000);
     }
 
     sock.ev.on('connection.update', (update) => {
-        const { connection } = update;
+        const { connection, lastDisconnect } = update;
+        
         if (connection === 'open') {
             isConnected = true;
+            isPairingInProgress = false;
             pairingCodeValue = "";
             statusMessage = isRunning ? `🚀 Dispatcher Running (${categoryNames[activeCategory]})` : "✔️ WhatsApp Connected! Ready to send.";
             console.log('WhatsApp Connected Successfully!');
         } else if (connection === 'close') {
             isConnected = false;
-            statusMessage = "❌ Disconnected. Reconnecting...";
-            setTimeout(connectToWhatsApp, 5000);
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            
+            // Jo already pair thayelu hoy ane disconnect thay to automatic reconnect thase
+            if (sock.authState.creds.registered && statusCode !== DisconnectReason.loggedOut) {
+                statusMessage = "🔄 Reconnecting to WhatsApp...";
+                setTimeout(() => connectToWhatsApp(false), 5000);
+            } else if (!sock.authState.creds.registered) {
+                // Jo code nakhvama time gayo hoy to error spam nahi kare
+                statusMessage = "⏳ Waiting for Pairing... Click 'Get New QR / Reconnect' button below for a fresh code.";
+            }
         }
     });
 
     sock.ev.on('creds.update', saveCreds);
 }
 
-connectToWhatsApp();
+connectToWhatsApp(true);
 
 app.get('/', (req, res) => {
     const currentQueue = storesQueues[activeCategory];
@@ -135,6 +151,7 @@ app.get('/', (req, res) => {
                 color: #cfd8dc;
                 margin-bottom: 18px;
                 font-size: 15px;
+                line-height: 1.5;
             }
             .sent-counter {
                 font-size: 20px;
@@ -163,7 +180,6 @@ app.get('/', (req, res) => {
             .btn-add { background-color: #131b23; border: 1px solid #00a870; color: #ffffff; margin-top: 15px; }
             .btn-remove { background-color: #131b23; border: 1px solid #ef4444; color: #ef4444; font-weight: 500; padding: 10px; margin-bottom: 15px; }
             
-            /* Category Switcher Styles */
             .cat-row {
                 display: flex;
                 justify-content: space-between;
@@ -178,15 +194,8 @@ app.get('/', (req, res) => {
                 border: 2px solid #00a870;
                 background-color: #142e26;
             }
-            .cat-info {
-                font-size: 16px;
-                font-weight: 600;
-            }
-            .cat-sub {
-                font-size: 13px;
-                color: #94a3b8;
-                margin-top: 3px;
-            }
+            .cat-info { font-size: 16px; font-weight: 600; }
+            .cat-sub { font-size: 13px; color: #94a3b8; margin-top: 3px; }
             .btn-switch {
                 background-color: #3b82f6;
                 color: white;
@@ -223,10 +232,7 @@ app.get('/', (req, res) => {
                 margin-bottom: 16px;
                 font-family: inherit;
             }
-            textarea {
-                font-family: monospace;
-                line-height: 1.4;
-            }
+            textarea { font-family: monospace; line-height: 1.4; }
             .queue-item {
                 padding: 14px 0;
                 border-bottom: 1px solid #1e293b;
@@ -266,11 +272,10 @@ app.get('/', (req, res) => {
             </form>
         </div>
 
-        <!-- Card 2: Category Switcher (NEW) -->
+        <!-- Card 2: Category Switcher -->
         <div class="card">
             <h2>📂 Select Category (Switch)</h2>
             
-            <!-- Boys Option -->
             <div class="cat-row ${activeCategory === 'boys' ? 'active' : ''}">
                 <div>
                     <div class="cat-info">👔 Boys / Men's Stores</div>
@@ -281,7 +286,6 @@ app.get('/', (req, res) => {
                     : `<form action="/switch" method="POST"><input type="hidden" name="category" value="boys"><button type="submit" class="btn-switch">Switch to This</button></form>`}
             </div>
 
-            <!-- Girls Option -->
             <div class="cat-row ${activeCategory === 'girls' ? 'active' : ''}">
                 <div>
                     <div class="cat-info">👗 Girls / Women's Stores</div>
@@ -292,10 +296,9 @@ app.get('/', (req, res) => {
                     : `<form action="/switch" method="POST"><input type="hidden" name="category" value="girls"><button type="submit" class="btn-switch">Switch to This</button></form>`}
             </div>
 
-            <!-- Jewelry Option -->
             <div class="cat-row ${activeCategory === 'jewelry' ? 'active' : ''}">
                 <div>
-                    <div class="cat-info">💍 Imitation Jewelry Stores</div>
+                    <div class="cat-info">💍 Girls Jewelry Stores</div>
                     <div class="cat-sub">Total: ${storesQueues.jewelry.length} | Pending: ${storesQueues.jewelry.filter(s => s.status === 'Pending').length}</div>
                 </div>
                 ${activeCategory === 'jewelry' 
@@ -328,19 +331,19 @@ app.get('/', (req, res) => {
         <div class="card">
             <h2>➕ Add to ${categoryNames[activeCategory]}</h2>
             <form action="/add" method="POST">
-                <textarea name="stores" rows="4" placeholder="Store Name, 919876543210&#10; Boutique Name, 9879123456" required></textarea>
-                <button type="submit" class="btn btn-add">📥 Add Stores to ${activeCategory.toUpperCase()}</button>
+                <textarea name="stores" rows="4" placeholder="Store Name, 919876543210&#10;Boutique Name, 9879123456" required></textarea>
+                <button type="submit" class="btn btn-add">📥 Add Stores</button>
             </form>
         </div>
 
         <!-- Card 5: Stores Queue -->
         <div class="card">
-            <h2>📋 Queue: ${categoryNames[activeCategory]} (${currentQueue.length})</h2>
+            <h2>📋 Stores Queue (${currentQueue.length})</h2>
             <form action="/remove-sent" method="POST">
                 <button type="submit" class="btn btn-remove">🗑️ Remove Already 'Sent' Stores</button>
             </form>
             <div>
-                ${currentQueue.length === 0 ? '<p style="color:#64748b;">No stores in this category yet. Add above!</p>' : ''}
+                ${currentQueue.length === 0 ? '<p style="color:#64748b;">Queue is empty. Add stores above!</p>' : ''}
                 ${currentQueue.map(s => `<div class="queue-item">${s.name} (${s.phone}) - <b>${s.status}</b></div>`).join('')}
             </div>
         </div>
@@ -350,7 +353,6 @@ app.get('/', (req, res) => {
     `);
 });
 
-// Switch Category Logic
 app.post('/switch', (req, res) => {
     const newCat = req.body.category;
     if (storesQueues[newCat]) {
@@ -360,7 +362,6 @@ app.post('/switch', (req, res) => {
     res.redirect('/');
 });
 
-// START DISPATCHER
 app.post('/start', async (req, res) => {
     if (!isConnected) {
         statusMessage = "❌ Cannot start: WhatsApp not connected!";
@@ -374,7 +375,6 @@ app.post('/start', async (req, res) => {
     res.redirect('/');
 });
 
-// STOP DISPATCHER
 app.post('/stop', (req, res) => {
     isRunning = false;
     if (timerId) clearTimeout(timerId);
@@ -382,31 +382,29 @@ app.post('/stop', (req, res) => {
     res.redirect('/');
 });
 
-// Reset Counter
 app.post('/reset', (req, res) => {
     sentToday = 0;
     statusMessage = "🔄 Today's counter reset to 0.";
     res.redirect('/');
 });
 
-// Reconnect WhatsApp
 app.post('/reconnect', async (req, res) => {
     try {
         if (timerId) clearTimeout(timerId);
         isRunning = false;
         isConnected = false;
+        isPairingInProgress = false;
         if (fs.existsSync('auth_info_baileys')) {
             fs.rmSync('auth_info_baileys', { recursive: true, force: true });
         }
-        statusMessage = "⏳ Generating new Pairing Code in 5 seconds... Refresh page!";
-        connectToWhatsApp();
+        statusMessage = "⏳ Generating fresh Pairing Code in 6 seconds... Refresh page after 6 sec!";
+        connectToWhatsApp(true);
     } catch (e) {
         console.error(e);
     }
     res.redirect('/');
 });
 
-// Save Settings
 app.post('/save', (req, res) => {
     limitPerDay = parseInt(req.body.limitPerDay) || 10;
     minDelay = parseInt(req.body.minDelay) || 5;
@@ -418,7 +416,6 @@ app.post('/save', (req, res) => {
     res.redirect('/');
 });
 
-// Add Stores to Active Category
 app.post('/add', (req, res) => {
     const lines = req.body.stores.split('\n');
     let count = 0;
@@ -441,14 +438,12 @@ app.post('/add', (req, res) => {
     res.redirect('/');
 });
 
-// Remove 'Sent' from Active Category
 app.post('/remove-sent', (req, res) => {
     storesQueues[activeCategory] = storesQueues[activeCategory].filter(s => s.status !== 'Sent');
     statusMessage = `🗑️ Removed 'Sent' stores from ${categoryNames[activeCategory]}.`;
     res.redirect('/');
 });
 
-// Background Dispatcher Function (Sends from currently active category)
 async function processQueue() {
     if (!isRunning || !isConnected) return;
 
